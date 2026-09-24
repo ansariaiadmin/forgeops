@@ -9,7 +9,7 @@ NC='\033[0m'
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}  ForgeOps — DevOps Control Plane${NC}"
-echo -e "${BLUE}  نصب خودکار - Auto Installer v0.9.3${NC}"
+echo -e "${BLUE}  نصب خودکار - Auto Installer v0.9.4${NC}"
 echo -e "${BLUE}  کنترل پنل DevOps${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
