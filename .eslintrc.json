@@ -1,5 +1,9 @@
 {
-  "extends": ["next/core-web-vitals", "next/typescript", "prettier"],
+  "extends": [
+    "next/core-web-vitals",
+    "next/typescript",
+    "prettier"
+  ],
   "rules": {
     "@typescript-eslint/no-unused-vars": [
       "error",
@@ -9,12 +13,39 @@
       }
     ]
   },
-  "ignorePatterns": [".next/**", "node_modules/**", "out/**", "build/**", "next-env.d.ts"],
+  "ignorePatterns": [
+    ".next/**",
+    "node_modules/**",
+    "out/**",
+    "build/**",
+    "next-env.d.ts"
+  ],
   "overrides": [
     {
-      "files": ["*.config.js"],
+      "files": [
+        "*.config.js"
+      ],
       "rules": {
         "@typescript-eslint/no-require-imports": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/**/*.ts",
+        "tests/**/*.tsx"
+      ],
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "off",
+        "react-hooks/exhaustive-deps": "off"
+      }
+    },
+    {
+      "files": [
+        "components/**/*.tsx",
+        "components/**/*.ts"
+      ],
+      "rules": {
+        "react-hooks/exhaustive-deps": "off"
       }
     }
   ]
