@@ -2,7 +2,7 @@
   "name": "forgeops",
   "version": "0.1.0",
   "private": true,
-  "description": "ForgeOps — DevOps control plane built with Next.js 15, TypeScript and shadcn/ui",
+  "description": "ForgeOps \u2014 DevOps control plane built with Next.js 15, TypeScript and shadcn/ui",
   "engines": {
     "node": ">=20.0.0"
   },
@@ -43,7 +43,7 @@
     "bcryptjs": "^2.4.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "diff": "^7.0.0",
+    "diff": "^9.0.0",
     "easymde": "^2.20.0",
     "lucide-react": "^0.511.0",
     "next": "^15.5.4",
@@ -71,7 +71,7 @@
     "eslint": "^8.57.1",
     "eslint-config-next": "^15.5.4",
     "eslint-config-prettier": "^9.1.0",
-    "postcss": "^8.5.3",
+    "postcss": "^8.5.6",
     "prettier": "^3.5.3",
     "prisma": "^6.0.0",
     "tailwindcss": "^3.4.17",
@@ -79,5 +79,10 @@
     "tsx": "^4.23.12",
     "typescript": "^5.8.3",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "postcss": "^8.5.6",
+    "prismjs": "^1.30.0",
+    "diff": "^9.0.0"
   }
 }
