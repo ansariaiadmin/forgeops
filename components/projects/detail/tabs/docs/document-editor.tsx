@@ -295,7 +295,7 @@ export function DocumentEditor({ project, document, onSave, onCancel }: Document
       <VersionHistoryDialog
         open={historyOpen}
         onOpenChange={setHistoryOpen}
-        versions={document.versions}
+        versions={document.versions ?? []}
       />
 
       <Dialog open={fullscreen} onOpenChange={setFullscreen}>

@@ -1,21 +1,7 @@
 import type { Prisma, RAGSource, RAGSourceType } from '@prisma/client'
 
 import { cosineSimilarity, pseudoEmbedding } from '@/lib/embeddings'
-
-/**
- * Mock API layer for the RAG knowledge base.
- *
- * Future REST surface (UI stays unchanged):
- *   GET  /api/projects/[slug]/rag/sources
- *   POST /api/projects/[slug]/rag/sources          (index new source)
- *   POST /api/projects/[slug]/rag/sources/[id]/index (re-index)
- *   GET  /api/projects/[slug]/rag/search?q=...
- *
- * Search is hybrid: text token-overlap (MVP) fused with embedding cosine
- * similarity when vectors are present (lib/embeddings — real OpenAI or
- * deterministic pseudo-vectors). Vectors live in RAGSource.embeddings,
- * ready for pgvector in production.
- */
+import { prisma } from '@/lib/prisma'
 
 // ─────────────────────────────── Types ───────────────────────────────
 
@@ -43,100 +29,7 @@ export interface SearchResult {
   source: RagSourceView
 }
 
-// ─────────────────────────────── Mock data ───────────────────────────────
-
-const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000)
-const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000)
-
-/** Source ids that failed indexing (kept outside the Prisma shape). */
-const FAILED_SOURCE_IDS = new Set(['rag-004'])
-
-const CHUNKS_BY_SOURCE: Record<string, string[]> = {
-  'rag-001': [
-    'forge-core is the core orchestration engine for the ForgeOps platform, managing deployments, agents and environments.',
-    'Multi-environment deployments to dev, staging and production are coordinated through a Redis-backed job queue.',
-    'The platform runs three services: web (Next.js UI), api (edge routes) and worker (background jobs).',
-    'Health monitoring watches every container and automatically rolls back deployments that fail their health checks.',
-    'Authentication uses JWT with a rotating refresh token, signed with the same secret as the NextAuth session cookie.',
-  ],
-  'rag-002': [
-    'POST /api/deploy accepts a project and environment, validates the payload with Zod and enqueues a deploy job.',
-    'GET /api/health returns the current service status, uptime and the last deployment result.',
-    'API responses use consistent envelopes: data, error and status, returning 202 for accepted async jobs.',
-    'Rate limiting is planned: Redis-based token bucket at 100 requests per minute per API key.',
-  ],
-  'rag-003': [
-    'Architecture rule: services never import each other directly — all cross-service work flows through the job queue.',
-    'The database is a single shared Postgres 16 instance with one schema per service.',
-    'Secrets are stored in environment variables and injected at container start; never committed to the repository.',
-    'Observability: every job writes structured logs with a correlation id so a single deploy can be traced end-to-end.',
-  ],
-}
-
-const MOCK_SOURCES: RAGSource[] = [
-  {
-    id: 'rag-001',
-    projectId: 'proj-core',
-    type: 'FILE',
-    path: 'README.md',
-    isIndexed: true,
-    lastIndexedAt: daysAgo(2),
-    chunks: CHUNKS_BY_SOURCE['rag-001'],
-    embeddings: null,
-    createdAt: daysAgo(90),
-    updatedAt: daysAgo(2),
-  },
-  {
-    id: 'rag-002',
-    projectId: 'proj-core',
-    type: 'DOCUMENT',
-    path: 'docs/api.md',
-    isIndexed: true,
-    lastIndexedAt: daysAgo(5),
-    chunks: CHUNKS_BY_SOURCE['rag-002'],
-    embeddings: null,
-    createdAt: daysAgo(80),
-    updatedAt: daysAgo(5),
-  },
-  {
-    id: 'rag-003',
-    projectId: 'proj-core',
-    type: 'DOCUMENT',
-    path: 'docs/architecture.md',
-    isIndexed: true,
-    lastIndexedAt: daysAgo(12),
-    chunks: CHUNKS_BY_SOURCE['rag-003'],
-    embeddings: null,
-    createdAt: daysAgo(70),
-    updatedAt: daysAgo(12),
-  },
-  {
-    id: 'rag-004',
-    projectId: 'proj-core',
-    type: 'PDF',
-    path: 'reports/spec-v2.pdf',
-    isIndexed: false,
-    lastIndexedAt: null,
-    chunks: null,
-    embeddings: null,
-    createdAt: daysAgo(3),
-    updatedAt: daysAgo(3),
-  },
-  {
-    id: 'rag-005',
-    projectId: 'proj-core',
-    type: 'URL',
-    path: 'https://forgeops.dev/guides/deploy',
-    isIndexed: false,
-    lastIndexedAt: null,
-    chunks: null,
-    embeddings: null,
-    createdAt: hoursAgo(20),
-    updatedAt: hoursAgo(20),
-  },
-]
-
-// ─────────────────────────────── API functions ───────────────────────────────
+// ─────────────────────────────── API functions — real Prisma ───────────────────────────────
 
 /** Read the chunk array from a source (supports both {id,text} and plain strings). */
 export function readChunks(source: RAGSource): RagChunk[] {
@@ -159,17 +52,89 @@ export function toJsonChunks(chunks: RagChunk[]): Prisma.JsonArray {
   return chunks as unknown as Prisma.JsonArray
 }
 
-/** Fetch all RAG sources of a project, newest first. */
-export async function getRagSources(projectId: string): Promise<RagSourceView[]> {
-  return MOCK_SOURCES.filter((source) => source.projectId === projectId)
-    .map((source) => ({ ...source, status: deriveStatus(source) }))
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-}
-
 function deriveStatus(source: RAGSource): RagStatus {
   if (source.isIndexed) return 'INDEXED'
-  if (FAILED_SOURCE_IDS.has(source.id)) return 'FAILED'
+  // If chunks null and not indexed, consider FAILED if old, else PENDING
+  if (!source.chunks && !source.isIndexed) {
+    // Check if it's been more than 1 day since creation and still not indexed
+    const ageDays = (Date.now() - source.createdAt.getTime()) / (1000 * 60 * 60 * 24)
+    if (ageDays > 1) return 'FAILED'
+  }
   return 'PENDING'
+}
+
+/** Fetch all RAG sources of a project, newest first — real Prisma. */
+export async function getRagSources(projectId: string): Promise<RagSourceView[]> {
+  const sources = await prisma.rAGSource.findMany({
+    where: { projectId },
+    orderBy: { createdAt: 'desc' },
+  })
+
+  return sources.map((source) => ({ ...source, status: deriveStatus(source) }))
+}
+
+/** Get single RAG source by ID */
+export async function getRagSourceById(id: string): Promise<RagSourceView | null> {
+  const source = await prisma.rAGSource.findUnique({ where: { id } })
+  if (!source) return null
+  return { ...source, status: deriveStatus(source) }
+}
+
+/** Create RAG source — real Prisma */
+export async function createRagSource(input: {
+  projectId: string
+  type: RAGSourceType
+  path: string
+  chunks?: RagChunk[] | string[]
+  embeddings?: number[][] | null
+}): Promise<RAGSource> {
+  if (!input.path || input.path.trim().length < 3) throw new Error('Path must be at least 3 characters')
+  if (!input.projectId) throw new Error('projectId required')
+
+  const chunks = input.chunks ?? generateChunks('', input.type, input.path).map((c) => c.text)
+
+  return prisma.rAGSource.create({
+    data: {
+      projectId: input.projectId,
+      type: input.type,
+      path: input.path.trim(),
+      isIndexed: true,
+      lastIndexedAt: new Date(),
+      chunks: chunks as unknown as Prisma.InputJsonValue,
+      embeddings: (input.embeddings ?? null) as unknown as Prisma.InputJsonValue,
+    },
+  })
+}
+
+/** Delete RAG source */
+export async function deleteRagSource(id: string): Promise<void> {
+  const existing = await prisma.rAGSource.findUnique({ where: { id } })
+  if (!existing) throw new Error('Source not found')
+  await prisma.rAGSource.delete({ where: { id } })
+}
+
+/** Re-index source */
+export async function reindexRagSource(id: string): Promise<RAGSource> {
+  const existing = await prisma.rAGSource.findUnique({ where: { id } })
+  if (!existing) throw new Error('Source not found')
+
+  const chunks = generateChunks(id, existing.type, existing.path)
+
+  return prisma.rAGSource.update({
+    where: { id },
+    data: {
+      isIndexed: true,
+      lastIndexedAt: new Date(),
+      chunks: chunks.map((c) => c.text) as unknown as Prisma.InputJsonValue,
+      updatedAt: new Date(),
+    },
+  })
+}
+
+/** Search RAG sources by keyword — real Prisma + keyword search */
+export async function searchRagSources(projectId: string, query: string, limit = 8): Promise<SearchResult[]> {
+  const sources = await getRagSources(projectId)
+  return searchKnowledgeBase(sources, query, limit)
 }
 
 /** Aggregate knowledge base stats. */
@@ -192,13 +157,12 @@ export function computeRagStats(sources: RagSourceView[]): RagStats {
   }
 }
 
-// ─────────────────────────────── Semantic search (MVP: text) ───────────────────────────────
+// ─────────────────────────────── Semantic search (keyword + embedding) ───────────────────────────────
 
 /**
  * Score how well a chunk matches a query — simple token-overlap:
  * what fraction of the query words appear in the chunk text, plus a
  * small bonus for exact phrase containment. 0–100.
- * Later this becomes a real embedding similarity search.
  */
 export function scoreChunk(query: string, chunkText: string): number {
   const normalized = query.toLowerCase().trim()
@@ -222,7 +186,6 @@ export function scoreChunk(query: string, chunkText: string): number {
  * Search indexed chunks with a hybrid scorer:
  *   0.6 × embedding cosine similarity (when vectors exist)
  *   0.4 × text token-overlap
- * Falls back to pure text scoring when a source has no embeddings.
  */
 export function searchKnowledgeBase(
   sources: RagSourceView[],
@@ -242,7 +205,6 @@ export function searchKnowledgeBase(
       const vector = vectors[index]
       const vectorScore = vector && queryVector ? cosineSimilarity(queryVector, vector) * 100 : null
 
-      // Hybrid: blend when both signals exist, else use whichever is available.
       const score =
         vectorScore !== null && textScore > 0
           ? Math.round(textScore * 0.4 + vectorScore * 0.6)
@@ -257,12 +219,10 @@ export function searchKnowledgeBase(
   return results.sort((a, b) => b.score - a.score).slice(0, limit)
 }
 
-/** Pseudo-embedding of the query (hybrid scoring uses it when vectors exist). */
 function pseudoEmbedQuery(query: string): number[] | null {
   return pseudoEmbedding(query)
 }
 
-/** Read the embeddings array stored on a source (validated length). */
 export function readEmbeddings(source: RAGSource, chunkCount: number): Array<number[] | null> {
   const raw = source.embeddings
   if (!Array.isArray(raw)) return Array.from({ length: chunkCount }, () => null)
@@ -272,7 +232,6 @@ export function readEmbeddings(source: RAGSource, chunkCount: number): Array<num
   })
 }
 
-/** Title for a result: the first sentence of the chunk, trimmed. */
 export function chunkTitle(chunk: RagChunk): string {
   const firstSentence = chunk.text.split(/[.\n]/)[0].trim()
   return firstSentence.length > 56 ? `${firstSentence.slice(0, 56)}…` : firstSentence
@@ -280,7 +239,6 @@ export function chunkTitle(chunk: RagChunk): string {
 
 // ─────────────────────────────── Indexing helpers ───────────────────────────────
 
-/** Generate mock chunks for a freshly indexed source. */
 export function generateChunks(sourceId: string, type: RAGSourceType, path: string): RagChunk[] {
   const name = path.split('/').pop() ?? path
   const topics: Record<string, string> = {
@@ -295,7 +253,6 @@ export function generateChunks(sourceId: string, type: RAGSourceType, path: stri
   }))
 }
 
-/** Source type label shown in badges. */
 export const RAG_TYPE_LABEL: Record<RAGSourceType, string> = {
   FILE: 'File',
   DOCUMENT: 'Document',

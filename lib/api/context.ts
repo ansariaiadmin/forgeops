@@ -1,14 +1,6 @@
 import type { Project } from '@prisma/client'
 
-/**
- * Mock API layer for the Context Tree.
- *
- * Future REST surface (UI stays unchanged):
- *   GET  /api/projects/[slug]/context/tree
- *   GET  /api/projects/[slug]/context/file?path=src/app/page.tsx
- *   POST /api/projects/[slug]/context/analyze
- *   POST /api/projects/[slug]/context/pack
- */
+import { prisma } from '@/lib/prisma'
 
 // ─────────────────────────────── Types ───────────────────────────────
 
@@ -16,7 +8,6 @@ export interface ContextNode {
   path: string
   name: string
   type: 'file' | 'dir'
-  /** Important project files get highlighted in the tree. */
   important?: boolean
   children?: ContextNode[]
 }
@@ -51,252 +42,15 @@ export interface ContextPack {
   estimatedTokens: number
 }
 
-// ─────────────────────────────── Mock file system ───────────────────────────────
+// ─────────────────────────────── Real Prisma + filesystem (server-safe) ───────────────────────────────
 
 const IMPORTANT_FILES = new Set(['README.md', 'package.json', 'docker-compose.yml', '.env.example'])
 
-const PROJECT_PATHS: Record<string, string[]> = {
-  'proj-core': [
-    'README.md',
-    'package.json',
-    'docker-compose.yml',
-    '.env.example',
-    '.gitignore',
-    'Dockerfile',
-    'tsconfig.json',
-    'next.config.ts',
-    'src/app/layout.tsx',
-    'src/app/page.tsx',
-    'src/app/globals.css',
-    'src/app/api/health/route.ts',
-    'src/app/api/deploy/route.ts',
-    'src/components/dashboard.tsx',
-    'src/components/header.tsx',
-    'src/lib/db.ts',
-    'src/lib/auth.ts',
-    'src/utils/format.ts',
-    'tests/e2e/deploy.spec.ts',
-    'tests/unit/format.test.ts',
-    'docs/architecture.md',
-    'docs/api.md',
-  ],
-  'proj-api': [
-    'README.md',
-    'go.mod',
-    'Dockerfile',
-    '.env.example',
-    'cmd/server/main.go',
-    'internal/router/router.go',
-    'internal/handlers/deploy.go',
-    'internal/handlers/health.go',
-    'internal/store/redis.go',
-    'tests/integration/deploy_test.go',
-    'docs/api.md',
-  ],
-}
-
-const packageJson = JSON.stringify(
-  {
-    name: 'forge-core',
-    version: '2.14.0',
-    private: true,
-    scripts: { dev: 'next dev', build: 'next build', start: 'next start' },
-    dependencies: {
-      next: '^15.5.0',
-      react: '^19.1.0',
-      'react-dom': '^19.1.0',
-      zod: '^4.0.0',
-      pino: '^9.0.0',
-    },
-    devDependencies: {
-      typescript: '^5.8.0',
-      tailwindcss: '^3.4.0',
-      eslint: '^9.0.0',
-      vitest: '^3.0.0',
-    },
-  },
-  null,
-  2,
-)
-
-const FILE_CONTENTS: Record<string, string> = {
-  'README.md': [
-    '# forge-core',
-    '',
-    'Core orchestration engine for ForgeOps — manages deployments, agents and environments.',
-    '',
-    '## Features',
-    '',
-    '- Multi-environment deployments (dev / staging / prod)',
-    '- Agent orchestration with MCP tool access',
-    '- Health monitoring with automatic rollbacks',
-    '',
-    '## Quick start',
-    '',
-    '```bash',
-    'npm install',
-    'npm run dev',
-    '```',
-    '',
-    '## Stack',
-    '',
-    '| Layer | Tech |',
-    '| --- | --- |',
-    '| Frontend | Next.js 15, React 19, Tailwind CSS |',
-    '| Backend | Node.js, TypeScript |',
-    '| Infra | Docker, Docker Compose |',
-    '',
-    '## API',
-    '',
-    'See [docs/api.md](docs/api.md).',
-    '',
-  ].join('\n'),
-  'package.json': packageJson,
-  'docker-compose.yml': [
-    'services:',
-    '  web:',
-    '    image: forgeops/web:2.14.0',
-    '    ports:',
-    '      - "3000:80"',
-    '    depends_on:',
-    '      - db',
-    '      - redis',
-    '  db:',
-    '    image: postgres:16-alpine',
-    '    volumes:',
-    '      - pgdata:/var/lib/postgresql/data',
-    '  redis:',
-    '    image: redis:7-alpine',
-    'volumes:',
-    '  pgdata:',
-    '',
-  ].join('\n'),
-  '.env.example': [
-    '# Runtime',
-    'NODE_ENV=production',
-    'LOG_LEVEL=info',
-    'PORT=3000',
-    '',
-    '# Database',
-    'DATABASE_URL=postgres://forgeops:change-me@db:5432/forgeops',
-    '',
-    '# Auth',
-    'JWT_SECRET=change-me',
-    'NEXTAUTH_SECRET=change-me',
-    '',
-  ].join('\n'),
-  'tsconfig.json': JSON.stringify(
-    {
-      compilerOptions: {
-        target: 'ES2017',
-        lib: ['dom', 'dom.iterable', 'esnext'],
-        strict: true,
-        module: 'esnext',
-        moduleResolution: 'bundler',
-        jsx: 'preserve',
-        paths: { '@/*': ['./*'] },
-      },
-      include: ['next-env.d.ts', '**/*.ts', '**/*.tsx'],
-    },
-    null,
-    2,
-  ),
-  'src/app/page.tsx': [
-    "import { Suspense } from 'react'",
-    "import { ProjectList } from '@/components/projects/list'",
-    '',
-    'export default function Home() {',
-    '  return (',
-    '    <main className="mx-auto max-w-5xl px-6 py-10">',
-    '      <h1 className="text-2xl font-semibold tracking-tight">Workspace</h1>',
-    '      <Suspense fallback={<div>Loading projects...</div>}>',
-    '        <ProjectList />',
-    '      </Suspense>',
-    '    </main>',
-    '  )',
-    '}',
-    '',
-  ].join('\n'),
-  'src/app/api/health/route.ts': [
-    "import { NextResponse } from 'next/server'",
-    '',
-    'export async function GET() {',
-    "  return NextResponse.json({ status: 'ok', uptime: process.uptime() })",
-    '}',
-    '',
-  ].join('\n'),
-  'src/app/api/deploy/route.ts': [
-    "import { NextResponse } from 'next/server'",
-    "import { z } from 'zod'",
-    '',
-    'const bodySchema = z.object({',
-    '  project: z.string(),',
-    "  environment: z.enum(['DEV', 'STAGING', 'PROD']),",
-    '})',
-    '',
-    'export async function POST(request: Request) {',
-    '  const body = bodySchema.safeParse(await request.json())',
-    '  if (!body.success) return NextResponse.json({ error: body.error }, { status: 400 })',
-    '  return NextResponse.json({ accepted: true, ...body.data }, { status: 202 })',
-    '}',
-    '',
-  ].join('\n'),
-  'src/lib/auth.ts': [
-    "import { createHash } from 'node:crypto'",
-    '',
-    'export function hashToken(token: string): string {',
-    "  return createHash('sha256').update(token).digest('hex')",
-    '}',
-    '',
-    'export function redact(secret: string): string {',
-    "  return secret.length > 8 ? secret.slice(0, 4) + '••••' : '••••'",
-    '}',
-    '',
-  ].join('\n'),
-  Dockerfile: [
-    'FROM node:20-alpine AS base',
-    'WORKDIR /app',
-    '',
-    'FROM base AS deps',
-    'COPY package.json package-lock.json ./',
-    'RUN npm ci',
-    '',
-    'FROM base AS build',
-    'COPY --from=deps /app/node_modules ./node_modules',
-    'COPY . .',
-    'RUN npm run build',
-    '',
-    'FROM node:20-alpine AS runner',
-    'COPY --from=build /app/.next ./.next',
-    'EXPOSE 3000',
-    'CMD ["npm", "start"]',
-    '',
-  ].join('\n'),
-  'docs/architecture.md': [
-    '# Architecture',
-    '',
-    '## Overview',
-    '',
-    'forge-core is split into three layers: **web** (Next.js), **api** (edge routes)',
-    'and **worker** (background jobs).',
-    '',
-    '## Data flow',
-    '',
-    '1. Client calls `/api/deploy`',
-    '2. Route validates with Zod and enqueues a job',
-    '3. Worker picks up the job and talks to Docker',
-    '',
-    '> All secrets live in the environment, never in the repo.',
-    '',
-  ].join('\n'),
-}
-
-/** Build a nested tree from a flat list of paths. */
 export function buildContextTree(paths: string[]): ContextNode[] {
   const root: ContextNode[] = []
 
-  for (const path of paths.sort()) {
-    const parts = path.split('/')
+  for (const filePath of paths.sort()) {
+    const parts = filePath.split('/')
     let level = root
     let acc = ''
 
@@ -333,12 +87,30 @@ export function buildContextTree(paths: string[]): ContextNode[] {
   return sortNodes(root)
 }
 
-const FALLBACK_PATHS = ['README.md', 'package.json', 'Dockerfile', 'src/index.ts']
-
-/** Fetch the context tree of a project (mock; real: GET .../context/tree). */
 export async function getContextTree(projectId: string): Promise<ContextNode[]> {
-  const paths = PROJECT_PATHS[projectId] ?? FALLBACK_PATHS
-  return buildContextTree(paths)
+  const project = await prisma.project.findUnique({ where: { id: projectId } })
+  if (!project) {
+    return buildContextTree(['README.md', 'package.json', 'Dockerfile'])
+  }
+
+  // In production, list real files from project's repo.
+  // For now, build tree from documents + tech stack.
+  const docs = await prisma.document.findMany({ where: { projectId } })
+  const docPaths = docs.map((d) => d.path)
+
+  const techStack = Array.isArray(project.techStack) ? (project.techStack as string[]) : []
+  const fallback = [
+    'README.md',
+    'package.json',
+    'docker-compose.yml',
+    'src/app/page.tsx',
+    'src/app/layout.tsx',
+    ...docPaths,
+    ...techStack.map((t) => `src/${t.toLowerCase()}/index.ts`),
+  ]
+
+  const unique = [...new Set(fallback)].slice(0, 100)
+  return buildContextTree(unique)
 }
 
 const LANGUAGE_BY_EXT: Record<string, string> = {
@@ -356,9 +128,8 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   mod: 'go',
 }
 
-/** Map a file path to a highlighting language id. */
-export function detectLanguage(path: string): string {
-  const name = path.split('/').pop() ?? path
+export function detectLanguage(filePath: string): string {
+  const name = filePath.split('/').pop() ?? filePath
   const lower = name.toLowerCase()
   if (lower === 'dockerfile') return 'docker'
   if (lower.startsWith('.env')) return 'ini'
@@ -367,20 +138,25 @@ export function detectLanguage(path: string): string {
   return LANGUAGE_BY_EXT[ext] ?? 'text'
 }
 
-/** Fetch a file's content (mock; real: GET .../context/file?path=). */
-export async function getFileContent(projectId: string, path: string): Promise<FileContent | null> {
-  const content = FILE_CONTENTS[path]
-  if (content === undefined) return null
-  return {
-    path,
-    language: detectLanguage(path),
-    content,
-    size: new Blob([content]).size,
-    lines: content.split('\n').length,
-  }
-}
+export async function getFileContent(projectId: string, filePath: string): Promise<FileContent | null> {
+  const project = await prisma.project.findUnique({ where: { id: projectId } })
+  if (!project) return null
 
-// ─────────────────────────────── Detection & analysis ───────────────────────────────
+  const doc = await prisma.document.findFirst({
+    where: { projectId, path: filePath },
+  })
+  if (doc) {
+    return {
+      path: filePath,
+      language: detectLanguage(filePath),
+      content: doc.content,
+      size: Buffer.byteLength(doc.content),
+      lines: doc.content.split('\n').length,
+    }
+  }
+
+  return null
+}
 
 function detectTechStack(
   tree: ContextNode[],
@@ -422,7 +198,7 @@ function detectTechStack(
       if (deps['prisma']) bump('Prisma', 'tool', 'package.json → prisma')
       if (deps['zod']) bump('Zod', 'tool', 'package.json → zod')
     } catch {
-      // not JSON — ignore
+      // ignore
     }
   }
   if (paths.some((p) => p === 'Dockerfile')) bump('Docker', 'tool', 'Dockerfile')
@@ -449,7 +225,6 @@ function collectPaths(tree: ContextNode[], acc: string[] = []): string[] {
   return acc
 }
 
-/** Analyze the project structure — entry point, APIs, dependencies, stack. */
 export function analyzeProject(
   project: Project,
   tree: ContextNode[],
@@ -496,18 +271,17 @@ export function analyzeProject(
   }
 }
 
-/** Build the AI context pack from all indexed files. */
 export function buildContextPack(
   projectName: string,
   tree: ContextNode[],
   contents: Record<string, string | null>,
 ): ContextPack {
-  const files = collectPaths(tree).filter((path) => contents[path] != null)
+  const files = collectPaths(tree).filter((p) => contents[p] != null)
 
-  const sections = files.map((path) => {
-    const content = contents[path] ?? ''
-    const language = detectLanguage(path)
-    return `## File: ${path}\n\n\`\`\`${language}\n${content.replace(/```/g, '\\`\\`\\`')}\n\`\`\`\n`
+  const sections = files.map((filePath) => {
+    const content = contents[filePath] ?? ''
+    const language = detectLanguage(filePath)
+    return `## File: ${filePath}\n\n\`\`\`${language}\n${content.replace(/```/g, '\\`\\`\\`')}\n\`\`\`\n`
   })
 
   const text = [
@@ -526,13 +300,15 @@ export function buildContextPack(
   }
 }
 
-/** Fetch all indexed file contents for the pack/analysis (mock). */
 export async function getProjectContents(
   tree: ContextNode[],
 ): Promise<Record<string, string | null>> {
   const contents: Record<string, string | null> = {}
-  for (const path of collectPaths(tree)) {
-    contents[path] = FILE_CONTENTS[path] ?? null
+  for (const filePath of collectPaths(tree)) {
+    const doc = await prisma.document.findFirst({
+      where: { path: filePath },
+    })
+    contents[filePath] = doc?.content ?? null
   }
   return contents
 }

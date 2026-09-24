@@ -489,7 +489,7 @@ async function main() {
         projectId: 'proj-core',
         type: 'DATABASE',
         path: 's3://forgeops-backups/prod-db-2026-08-18.sql.gz',
-        size: 2_147_483_648,
+        size: 1_073_741_824, // 1GB — fits in INT
         status: 'READY',
         createdAt: hoursAgo(2),
       },

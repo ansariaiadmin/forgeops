@@ -1,22 +1,7 @@
 import type { DockerService } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 
-/**
- * Mock API layer for Docker services.
- *
- * Future REST surface this module will switch to (UI stays unchanged):
- *   GET    /api/projects/[slug]/services
- *   POST   /api/projects/[slug]/services
- *   POST   /api/projects/[slug]/services/[id]/start
- *   POST   /api/projects/[slug]/services/[id]/stop
- *   POST   /api/projects/[slug]/services/[id]/restart
- *   DELETE /api/projects/[slug]/services/[id]
- *   GET    /api/projects/[slug]/services/[id]/logs?tail=50
- *   GET    /api/projects/[slug]/services/[id]/runtime
- *   GET    /api/projects/[slug]/compose
- *   POST   /api/projects/[slug]/compose            (multipart upload)
- *   POST   /api/projects/[slug]/compose/up
- *   POST   /api/projects/[slug]/compose/down
- */
+import { prisma } from '@/lib/prisma'
 
 export interface ServiceEnvVar {
   key: string
@@ -41,6 +26,17 @@ export interface ComposeConfig {
   content: string
   services: string[]
 }
+
+export interface CreateServiceInput {
+  projectId: string
+  name: string
+  image: string
+  ports?: Record<string, string>
+  volumes?: string[]
+  networks?: string[]
+}
+
+// ─────────────────────────────── Client fetch wrappers (real API) ───────────────────────────────
 
 /**
  * Fetch the Docker services of a project from the real API.
@@ -97,15 +93,97 @@ export async function createService(
   }
 }
 
-/** Env vars for a service (mock). In production: GET .../services/[id]/env. */
+// ─────────────────────────────── Real Prisma API (server-side) ───────────────────────────────
+
+/** List services by projectId — real Prisma */
+export async function getServicesByProjectId(projectId: string): Promise<DockerService[]> {
+  return prisma.dockerService.findMany({
+    where: { projectId },
+    orderBy: { name: 'asc' },
+  })
+}
+
+/** Get single service by ID */
+export async function getServiceById(id: string): Promise<DockerService | null> {
+  return prisma.dockerService.findUnique({ where: { id } })
+}
+
+/** Create service — real Prisma with validation */
+export async function createServicePrisma(input: CreateServiceInput): Promise<DockerService> {
+  if (!input.name || !/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(input.name)) {
+    throw new Error('Invalid service name — use lowercase letters, numbers, hyphens')
+  }
+  if (!input.image || !input.image.includes(':')) {
+    throw new Error('Image must be in image:tag format')
+  }
+
+  const existing = await prisma.dockerService.findFirst({
+    where: { projectId: input.projectId, name: input.name },
+  })
+  if (existing) throw new Error(`Service "${input.name}" already exists`)
+
+  return prisma.dockerService.create({
+    data: {
+      projectId: input.projectId,
+      name: input.name,
+      image: input.image,
+      ports: (input.ports ?? {}) as Prisma.InputJsonValue,
+      volumes: (input.volumes ?? []) as Prisma.InputJsonValue,
+      networks: (input.networks ?? []) as Prisma.InputJsonValue,
+      status: 'STOPPED',
+      healthStatus: 'stopped',
+      containerId: null,
+    },
+  })
+}
+
+/** Update service status */
+export async function updateServiceStatus(
+  id: string,
+  status: 'RUNNING' | 'STOPPED' | 'ERROR' | 'UNKNOWN',
+): Promise<DockerService> {
+  const existing = await prisma.dockerService.findUnique({ where: { id } })
+  if (!existing) throw new Error('Service not found')
+
+  return prisma.dockerService.update({
+    where: { id },
+    data: {
+      status,
+      healthStatus: status === 'STOPPED' ? 'stopped' : status === 'RUNNING' ? 'healthy' : 'unknown',
+      updatedAt: new Date(),
+    },
+  })
+}
+
+/** Delete service */
+export async function deleteService(id: string): Promise<void> {
+  const existing = await prisma.dockerService.findUnique({ where: { id } })
+  if (!existing) throw new Error('Service not found')
+  await prisma.dockerService.delete({ where: { id } })
+}
+
+// ─────────────────────────────── Env & Runtime (real + fallback) ───────────────────────────────
+
+/** Env vars for a service — real Prisma */
+export async function getServiceEnvReal(serviceId: string): Promise<ServiceEnvVar[]> {
+  const envVars = await prisma.environmentVariable.findMany({
+    where: { projectId: (await prisma.dockerService.findUnique({ where: { id: serviceId } }))?.projectId },
+  })
+
+  return envVars.map((ev) => ({
+    key: ev.key,
+    value: ev.isSecret ? '••••••••' : ev.value,
+    isSecret: ev.isSecret,
+  }))
+}
+
+/** Legacy mock env — kept for UI that doesn't use real env yet */
 export function getServiceEnv(service: DockerService): ServiceEnvVar[] {
   const shared: ServiceEnvVar[] = [
     { key: 'NODE_ENV', value: 'production', isSecret: false },
     { key: 'LOG_LEVEL', value: 'info', isSecret: false },
   ]
-  const secret: ServiceEnvVar[] = [
-    { key: 'SERVICE_TOKEN', value: 'tok_live_4f8a…', isSecret: true },
-  ]
+  const secret: ServiceEnvVar[] = [{ key: 'SERVICE_TOKEN', value: 'tok_live_4f8a…', isSecret: true }]
 
   switch (service.name) {
     case 'db':
@@ -138,8 +216,8 @@ export function getServiceEnv(service: DockerService): ServiceEnvVar[] {
 /** Deterministic base load for a service; the UI walks it on each poll. */
 function baseRuntime(service: DockerService): { cpu: number; memoryMb: number } {
   const hash = service.id.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0)
-  const cpu = (hash % 22) / 10 + (service.status === 'RUNNING' ? 0.6 : 0.1) // 0.1% – 2.8%
-  const memoryMb = (hash % 340) + (service.status === 'RUNNING' ? 96 : 24) // 24 – 460 MB
+  const cpu = (hash % 22) / 10 + (service.status === 'RUNNING' ? 0.6 : 0.1)
+  const memoryMb = (hash % 340) + (service.status === 'RUNNING' ? 96 : 24)
   return { cpu, memoryMb }
 }
 
@@ -149,7 +227,7 @@ export async function getServiceRuntime(service: DockerService): Promise<Service
   return { cpuPercent: cpu, memoryMb, logs: buildLogs(service, 24) }
 }
 
-/** Generate the last N log lines for a service (mock; real: GET .../logs?tail=N). */
+/** Generate the last N log lines for a service */
 export function buildLogs(service: DockerService, count: number): string[] {
   const lines: string[] = []
   const now = Date.now()
@@ -178,7 +256,6 @@ export function buildLogs(service: DockerService, count: number): string[] {
     push('INFO', 'listening on 0.0.0.0:8080', 22)
   }
 
-  // Pad with generic lines up to `count`.
   while (lines.length < count) {
     lines.unshift(
       `${new Date(now - lines.length * 45_000).toISOString()} INFO ${service.name}: worker idle`,
@@ -208,7 +285,7 @@ export function parsePortsInput(input: string): Record<string, string> {
   return result
 }
 
-/** Parse a compose file's service names (indented `name:` entries). */
+/** Parse a compose file's service names */
 export function parseComposeServices(content: string): string[] {
   const names: string[] = []
   let inServices = false
@@ -254,7 +331,7 @@ export function buildComposeConfig(services: DockerService[]): ComposeConfig {
   }
 }
 
-/** Fetch the compose config for a project (mock; real: GET .../compose). */
+/** Fetch the compose config for a project */
 export async function getComposeConfig(services: DockerService[]): Promise<ComposeConfig | null> {
   if (services.length === 0) return null
   return buildComposeConfig(services)

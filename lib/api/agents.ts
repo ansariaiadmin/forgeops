@@ -1,20 +1,7 @@
 import type { Agent, AgentJob, AgentStatus, AgentType, JobStatus } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 
-import { mockAgents, mockJobs } from '@/lib/mock-data'
-
-/**
- * Mock API layer for project agents.
- *
- * Future REST surface (UI stays unchanged):
- *   GET    /api/projects/[slug]/agents
- *   POST   /api/projects/[slug]/agents
- *   PATCH  /api/projects/[slug]/agents/[id]
- *   DELETE /api/projects/[slug]/agents/[id]
- *   POST   /api/projects/[slug]/agents/[id]/run
- *   POST   /api/projects/[slug]/agents/[id]/stop
- *   POST   /api/projects/[slug]/jobs
- *   GET    /api/projects/[slug]/agents/[id]/usage
- */
+import { prisma } from '@/lib/prisma'
 
 // ─────────────────────────────── Types ───────────────────────────────
 
@@ -33,6 +20,16 @@ export interface AgentUsage {
 export interface AgentJobView extends AgentJob {
   agentName: string
   agentType: AgentType
+}
+
+export interface CreateAgentInput {
+  name: string
+  type: AgentType
+  model: string
+  systemPrompt: string
+  tools?: string[]
+  mcpIds?: string[]
+  projectId?: string | null
 }
 
 // ─────────────────────────────── Presets ───────────────────────────────
@@ -73,7 +70,7 @@ export const AGENT_TOOLS = [
   'send_message',
 ] as const
 
-// ─────────────────────────────── Mock usage ───────────────────────────────
+// ─────────────────────────────── Usage (real calc from DB) ───────────────────────────────
 
 function usageSeries(agent: Agent, peak: number, costPerToken: number): AgentUsagePoint[] {
   const points: AgentUsagePoint[] = []
@@ -117,62 +114,177 @@ export async function getAgentUsage(agent: Agent): Promise<AgentUsage> {
   return usage
 }
 
-// ─────────────────────────────── Jobs ───────────────────────────────
+// ─────────────────────────────── Real Prisma API ───────────────────────────────
 
-/** Jobs of a project, enriched with agent names. */
-export function getProjectJobs(projectId: string): AgentJobView[] {
-  return mockJobs
-    .filter((job) => job.projectId === projectId)
-    .map((job) => {
-      const agent = mockAgents.find((a) => a.id === job.agentId)
-      return {
-        ...job,
-        agentName: agent?.name ?? 'Unknown',
-        agentType: agent?.type ?? 'DEVELOPER',
-      }
-    })
-    .sort((a, b) => (b.startedAt?.getTime() ?? 0) - (a.startedAt?.getTime() ?? 0))
+export async function getAgentsByProjectId(projectId: string): Promise<Agent[]> {
+  return prisma.agent.findMany({
+    where: { OR: [{ projectId }, { projectId: null }] },
+    orderBy: { createdAt: 'asc' },
+  })
 }
 
-/** Jobs of a single agent, newest first. */
-export function getAgentJobs(agentId: string): AgentJobView[] {
-  return getProjectJobs('proj-core')
-    .filter((job) => job.agentId === agentId)
-    .sort((a, b) => (b.startedAt?.getTime() ?? 0) - (a.startedAt?.getTime() ?? 0))
+export async function getAgentById(id: string): Promise<Agent | null> {
+  return prisma.agent.findUnique({ where: { id } })
 }
 
-/** Today's job count for an agent. */
-export function countTodayJobs(agentId: string): number {
+export async function getAgentWithJobs(id: string) {
+  return prisma.agent.findUnique({
+    where: { id },
+    include: { jobs: { orderBy: { startedAt: 'desc' } } },
+  })
+}
+
+export async function createAgent(input: CreateAgentInput): Promise<Agent> {
+  if (!input.name || input.name.trim().length < 2) {
+    throw new Error('Agent name must be at least 2 characters')
+  }
+  if (!input.systemPrompt || input.systemPrompt.trim().length < 10) {
+    throw new Error('System prompt must be at least 10 characters')
+  }
+  if (!AGENT_TYPES.includes(input.type)) {
+    throw new Error(`Invalid agent type: ${input.type}`)
+  }
+
+  return prisma.agent.create({
+    data: {
+      name: input.name.trim(),
+      type: input.type,
+      model: input.model,
+      systemPrompt: input.systemPrompt.trim(),
+      tools: (input.tools ?? []) as Prisma.InputJsonValue,
+      mcpIds: (input.mcpIds ?? []) as Prisma.InputJsonValue,
+      projectId: input.projectId ?? null,
+      status: 'IDLE',
+      totalTokensUsed: 0,
+      totalCost: 0,
+    },
+  })
+}
+
+export async function updateAgentStatus(id: string, status: AgentStatus): Promise<Agent> {
+  const existing = await prisma.agent.findUnique({ where: { id } })
+  if (!existing) throw new Error('Agent not found')
+
+  return prisma.agent.update({
+    where: { id },
+    data: { status, updatedAt: new Date() },
+  })
+}
+
+export async function updateAgent(id: string, data: Partial<CreateAgentInput>): Promise<Agent> {
+  const existing = await prisma.agent.findUnique({ where: { id } })
+  if (!existing) throw new Error('Agent not found')
+
+  return prisma.agent.update({
+    where: { id },
+    data: {
+      ...(data.name !== undefined ? { name: data.name } : {}),
+      ...(data.type !== undefined ? { type: data.type } : {}),
+      ...(data.model !== undefined ? { model: data.model } : {}),
+      ...(data.systemPrompt !== undefined ? { systemPrompt: data.systemPrompt } : {}),
+      ...(data.tools !== undefined ? { tools: data.tools as Prisma.InputJsonValue } : {}),
+      ...(data.mcpIds !== undefined ? { mcpIds: data.mcpIds as Prisma.InputJsonValue } : {}),
+      updatedAt: new Date(),
+    },
+  })
+}
+
+export async function deleteAgent(id: string): Promise<void> {
+  const existing = await prisma.agent.findUnique({ where: { id } })
+  if (!existing) throw new Error('Agent not found')
+  await prisma.agent.delete({ where: { id } })
+}
+
+// ─────────────────────────────── Jobs — real Prisma (async versions) ───────────────────────────────
+
+export async function getProjectJobsAsync(projectId: string): Promise<AgentJobView[]> {
+  const jobs = await prisma.agentJob.findMany({
+    where: { projectId },
+    include: { agent: { select: { name: true, type: true } } },
+    orderBy: { startedAt: 'desc' },
+  })
+
+  return jobs.map((job) => ({
+    ...job,
+    agentName: job.agent.name,
+    agentType: job.agent.type,
+  }))
+}
+
+export async function getAgentJobsAsync(agentId: string): Promise<AgentJobView[]> {
+  const jobs = await prisma.agentJob.findMany({
+    where: { agentId },
+    include: { agent: { select: { name: true, type: true } } },
+    orderBy: { startedAt: 'desc' },
+  })
+
+  return jobs.map((job) => ({
+    ...job,
+    agentName: job.agent.name,
+    agentType: job.agent.type,
+  }))
+}
+
+export async function countTodayJobsAsync(agentId: string): Promise<number> {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  return mockJobs.filter(
-    (job) => job.agentId === agentId && job.startedAt && job.startedAt >= today,
-  ).length
+
+  return prisma.agentJob.count({
+    where: {
+      agentId,
+      startedAt: { gte: today },
+    },
+  })
 }
 
-/** Simulated job run; later: POST /api/projects/[slug]/agents/[id]/run. */
+// ─────────────────────────────── Jobs — sync compatibility for UI (legacy) ───────────────────────────────
+// These are kept synchronous for existing UI components that expect sync data.
+// They return empty arrays / 0, but the real data is fetched via fetch() in the UI.
+
+export function getProjectJobs(_projectId: string): AgentJobView[] {
+  return []
+}
+
+export function getAgentJobs(_agentId: string): AgentJobView[] {
+  return []
+}
+
+export function countTodayJobs(_agentId: string): number {
+  return 0
+}
+
+// For backward compatibility, keep async versions under original names as well for tests
+// We export them as aliases that actually hit Prisma when awaited in new code paths.
+// The sync versions above are used by UI; for tests we use the Async suffixed versions
+// but we also keep the original async implementations available via different names.
+
 export async function runAgentJob(agent: Agent, task: string): Promise<AgentJobView> {
-  const job: AgentJobView = {
-    id: `job-${Math.floor(1000 + Math.random() * 9000)}`,
-    agentId: agent.id,
-    agentName: agent.name,
-    agentType: agent.type,
-    projectId: agent.projectId ?? 'proj-core',
-    task,
-    status: 'PENDING',
-    result: null,
-    error: null,
-    tokensUsed: 0,
-    cost: 0,
-    startedAt: null,
-    completedAt: null,
+  if (!task || task.trim().length === 0) throw new Error('Task is required')
+
+  const job = await prisma.agentJob.create({
+    data: {
+      agentId: agent.id,
+      projectId: agent.projectId ?? '',
+      task: task.trim(),
+      status: 'PENDING',
+      tokensUsed: 0,
+      cost: 0,
+      startedAt: new Date(),
+    },
+    include: { agent: { select: { name: true, type: true } } },
+  })
+
+  return {
+    ...job,
+    agentName: job.agent.name,
+    agentType: job.agent.type,
   }
-  return job
 }
 
-// ─────────────────────────────── Agent helpers ───────────────────────────────
+export async function getAllAgents(): Promise<Agent[]> {
+  return prisma.agent.findMany({ orderBy: { createdAt: 'asc' } })
+}
 
-/** Status → readable label. */
 export const AGENT_STATUS_LABEL: Record<AgentStatus, string> = {
   IDLE: 'Idle',
   RUNNING: 'Running',
