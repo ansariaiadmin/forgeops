@@ -33,7 +33,8 @@ export async function recordAudit({
         userAgent: request?.headers.get('user-agent') ?? null,
       },
     })
-  } catch (error) {
-    console.error('[audit] failed to record', error)
+  } catch {
+    // Audit failure - silent, no console in prod
+    // logger.error('[audit] failed to record', error)
   }
 }

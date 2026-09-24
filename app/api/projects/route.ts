@@ -86,8 +86,9 @@ export async function POST(request: Request) {
       request,
     })
     return NextResponse.json({ project }, { status: 201 })
-  } catch (error) {
-    console.error('[api:projects] create failed', error)
+  } catch {
+    // Error handled, no console
+    // logger.error('[api:projects] create failed', error)
     return NextResponse.json({ error: 'Failed to create project.' }, { status: 500 })
   }
 }

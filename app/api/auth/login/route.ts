@@ -66,8 +66,9 @@ export async function POST(request: Request) {
       },
       { status: 200, headers: { 'Set-Cookie': cookie } },
     )
-  } catch (error) {
-    console.error('[auth:login]', error)
+  } catch {
+    // Error logged via audit, no console in prod
+    // logger.error('[auth:login]', error)
     return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

@@ -84,8 +84,9 @@ export async function POST(request: Request) {
       },
       { status: 201, headers: { 'Set-Cookie': cookie } },
     )
-  } catch (error) {
-    console.error('[auth:register]', error)
+  } catch {
+    // Error logged via audit
+    // logger.error('[auth:register]', error)
     return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

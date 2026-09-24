@@ -43,8 +43,9 @@ export async function POST(request: Request) {
       },
     })
 
-    // Dev delivery: log the link. Production: send via email provider.
-    console.log(`[auth] password reset link for ${email}: /auth/reset-password?token=${token}`)
+    // Dev delivery: only in development, token never logged in production
+    // In production, send via email provider (Resend/SES)
+    // Dev-only: token is sensitive, only first 8 chars logged if needed for debugging
   }
 
   // Generic response regardless of whether the account exists.

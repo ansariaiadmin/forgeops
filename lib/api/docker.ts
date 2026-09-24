@@ -183,7 +183,7 @@ export function getServiceEnv(service: DockerService): ServiceEnvVar[] {
     { key: 'NODE_ENV', value: 'production', isSecret: false },
     { key: 'LOG_LEVEL', value: 'info', isSecret: false },
   ]
-  const secret: ServiceEnvVar[] = [{ key: 'SERVICE_TOKEN', value: 'tok_live_4f8a…', isSecret: true }]
+  const secret: ServiceEnvVar[] = [{ key: 'SERVICE_TOKEN', value: 'tok_live_***_placeholder_from_env', isSecret: true }]
 
   switch (service.name) {
     case 'db':
