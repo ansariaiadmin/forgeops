@@ -1,0 +1,439 @@
+// ForgeOps — Postgres schema (for production deployments).
+//
+// Identical models to schema.prisma but with the postgresql provider.
+// To deploy with Postgres:
+//   1. cp prisma/schema.postgres.prisma prisma/schema.prisma
+//   2. DATABASE_URL="postgresql://forgeops:pass@db:5432/forgeops?schema=public" npx prisma migrate deploy
+//   3. npm run db:seed
+// NOTE: `@default(uuid())` needs the uuid-ossp extension on Postgres —
+// Prisma handles this via its migration engine automatically.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  DEVELOPER
+  VIEWER
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+enum Environment {
+  DEV
+  STAGING
+  PROD
+}
+
+enum ServiceStatus {
+  RUNNING
+  STOPPED
+  ERROR
+  UNKNOWN
+}
+
+enum MemoryCategory {
+  ARCHITECTURE
+  DECISION
+  BUG
+  CONVENTION
+  TODO
+}
+
+enum MCPStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+enum AgentType {
+  DEVELOPER
+  DEVOPS
+  REVIEWER
+  DOCUMENTER
+  PRODUCT
+}
+
+enum AgentStatus {
+  IDLE
+  RUNNING
+  ERROR
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+enum DocumentType {
+  README
+  API_DOCS
+  ARCHITECTURE
+  GUIDE
+  OTHER
+}
+
+enum RAGSourceType {
+  FILE
+  DOCUMENT
+  GIT
+  URL
+  PDF
+  WIKI
+}
+
+enum BackupType {
+  VOLUME
+  DATABASE
+  CONFIG
+  MEMORY
+}
+
+enum BackupStatus {
+  CREATING
+  READY
+  FAILED
+}
+
+enum TaskStatus {
+  BACKLOG
+  RUNNING
+  REVIEW
+  DONE
+  FAILED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model User {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  password  String
+  name      String
+  avatar    String?
+  role      Role      @default(VIEWER)
+  isActive  Boolean   @default(true)
+  lastLogin DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  ownedWorkspaces    Workspace[]
+  ownedProjects      Project[]
+  projectMemberships ProjectMember[]
+  documentsEdited    Document[]
+  auditLogs          AuditLog[]
+  tasksAssigned      Task[]
+  resetTokens        PasswordResetToken[]
+
+  @@index([lastLogin])
+  @@map("users")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Workspace {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?
+  ownerId     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner    User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  projects Project[]
+
+  @@index([ownerId])
+}
+
+model Project {
+  id          String        @id @default(uuid())
+  name        String
+  slug        String
+  description String?
+  workspaceId String
+  ownerId     String
+  status      ProjectStatus @default(ACTIVE)
+  environment Environment   @default(DEV)
+  techStack   Json?
+  healthScore Float         @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  owner     User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  members              ProjectMember[]
+  dockerServices       DockerService[]
+  environmentVariables EnvironmentVariable[]
+  memories             ProjectMemory[]
+  mcpConnections       MCPConnection[]
+  agents               Agent[]
+  jobs                 AgentJob[]
+  documents            Document[]
+  ragSources           RAGSource[]
+  auditLogs            AuditLog[]
+  backups              Backup[]
+  tasks                Task[]
+
+  @@unique([workspaceId, slug])
+  @@index([ownerId])
+  @@index([status])
+  @@index([environment])
+}
+
+model ProjectMember {
+  userId    String
+  projectId String
+  role      Role     @default(VIEWER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@id([userId, projectId])
+  @@index([projectId])
+}
+
+model DockerService {
+  id           String        @id @default(uuid())
+  projectId    String
+  name         String
+  image        String
+  containerId  String?
+  status       ServiceStatus @default(UNKNOWN)
+  ports        Json?
+  volumes      Json?
+  networks     Json?
+  healthStatus String        @default("unknown")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([status])
+}
+
+model EnvironmentVariable {
+  id          String      @id @default(uuid())
+  projectId   String
+  key         String
+  value       String // encrypted at rest — see lib/crypto.ts
+  isSecret    Boolean     @default(false)
+  environment Environment @default(DEV)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, environment, key])
+  @@index([environment])
+}
+
+model ProjectMemory {
+  id        String         @id @default(uuid())
+  projectId String
+  category  MemoryCategory
+  title     String
+  content   String         @db.Text
+  metadata  Json?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([category])
+}
+
+model MCPConnection {
+  id              String    @id @default(uuid())
+  projectId       String
+  name            String
+  type            String
+  status          MCPStatus @default(DISCONNECTED)
+  config          Json?
+  allowedTools    Json?
+  scopes          Json?
+  lastConnectedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([status])
+}
+
+model Agent {
+  id              String      @id @default(uuid())
+  name            String
+  type            AgentType   @default(DEVELOPER)
+  projectId       String?
+  model           String      @default("gpt-4")
+  systemPrompt    String      @db.Text
+  tools           Json?
+  mcpIds          Json?
+  status          AgentStatus @default(IDLE)
+  totalTokensUsed Int         @default(0)
+  totalCost       Float       @default(0)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  jobs    AgentJob[]
+  tasks   Task[]
+
+  @@index([projectId])
+  @@index([type])
+  @@index([status])
+}
+
+model AgentJob {
+  id          String    @id @default(uuid())
+  agentId     String
+  projectId   String
+  task        String    @db.Text
+  status      JobStatus @default(PENDING)
+  result      String?   @db.Text
+  error       String?   @db.Text
+  tokensUsed  Int       @default(0)
+  cost        Float     @default(0)
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  agent   Agent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+  @@index([projectId])
+  @@index([status])
+}
+
+model Document {
+  id           String       @id @default(uuid())
+  projectId    String
+  title        String
+  content      String       @default("") @db.Text
+  path         String
+  type         DocumentType @default(OTHER)
+  version      Int          @default(1)
+  lastEditedBy String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  lastEditor User?   @relation(fields: [lastEditedBy], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, path])
+  @@index([type])
+}
+
+model RAGSource {
+  id            String        @id @default(uuid())
+  projectId     String
+  type          RAGSourceType
+  path          String
+  isIndexed     Boolean       @default(false)
+  lastIndexedAt DateTime?
+  chunks        Json?
+  embeddings    Json? // pgvector-ready: switch to Unsupported("vector(1536)") + extension
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([type])
+  @@index([isIndexed])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  projectId String?
+  action    String
+  resource  String
+  details   Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([projectId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model Backup {
+  id        String       @id @default(uuid())
+  projectId String
+  type      BackupType
+  path      String
+  size      Int          @default(0)
+  status    BackupStatus @default(CREATING)
+  createdAt DateTime     @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([status])
+}
+
+model Task {
+  id            String       @id @default(uuid())
+  projectId     String
+  title         String
+  description   String?      @db.Text
+  status        TaskStatus   @default(BACKLOG)
+  priority      TaskPriority @default(MEDIUM)
+  assignedTo    String?
+  assignedAgent String?
+  metadata      Json?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  completedAt   DateTime?
+
+  project  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignee User?   @relation(fields: [assignedTo], references: [id], onDelete: SetNull)
+  agent    Agent?  @relation(fields: [assignedAgent], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([assignedTo])
+  @@index([status])
+  @@index([priority])
+}

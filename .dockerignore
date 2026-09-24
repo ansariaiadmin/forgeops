@@ -1,0 +1,24 @@
+# Dependencies & build output
+node_modules
+.next
+out
+build
+coverage
+
+# Git
+.git
+.gitignore
+
+# Env & secrets — NEVER build these into the image
+.env
+.env*.local
+
+# Local database
+prisma/*.db
+prisma/*.db-journal
+
+# Misc
+.DS_Store
+*.md
+!README.md
+tests

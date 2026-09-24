@@ -1,0 +1,11 @@
+# dependencies & build output
+node_modules
+.next
+out
+build
+coverage
+
+# generated / env
+next-env.d.ts
+*.tsbuildinfo
+package-lock.json
