@@ -28,9 +28,9 @@ services:
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?Set NEXTAUTH_SECRET in .env}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-forgeops}:${POSTGRES_PASSWORD:-forgeops}@db:5432/${POSTGRES_DB:-forgeops}?schema=public}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-forgeops}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-forgeops}?schema=public}
       POSTGRES_USER: ${POSTGRES_USER:-forgeops}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forgeops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-forgeops}
     volumes:
       - forgeops-data:/data
